@@ -1,0 +1,419 @@
+/* ECE 209 Section 051
+ *
+ * This program provides the source code
+ * for an auto-completion interface.
+ *
+ * Functions allow the user to add dictionaries,
+ * individual words and context, as well as ask
+ * for suggestions for partially-typed words based
+ * on their similarity to dictionary words and
+ * a context word immediately preceeding the typed
+ * word. Functionality includes returning the number
+ * of dictionary words, context words and currently
+ * allocated bytes of memory from function use.
+ *
+ * A hash table stores pointers to stored words
+ * in a alphabetically-sorted dictionary array,
+ * as well as pointers to linked lists of context words
+ * at each hash table entry. The compound data structure
+ * allows for efficient access times given partially-typed
+ * words and enough space to store 5 english languages-worth
+ * of words and their context.
+ *
+ * Author: Sam Messick
+ * Last Modified: July 21, 2017 */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "autocomplete.h"
+#define DICTIONARY_SIZE 1000000
+#define WORD_LENGTH 50
+
+char sorted_dictionary[DICTIONARY_SIZE][WORD_LENGTH]; // Sorted array of dictionary words
+
+typedef struct context_list  // For list of context words for a dictionary word
+{
+  char word[WORD_LENGTH];   // Context word
+  struct context_list* next; // Pointer to next context nodes
+} Context_Node;
+
+typedef struct word_list   // F List of dictionary words at a hash table node
+{
+  char** word; // Dictionary word array address
+  struct word_list* next;  // Pointer to next dictionary node
+  struct context_list* prior;  // Pointer to context list for dictionary word
+} Dictionary_Node;
+
+// Hash table node
+typedef struct hash_node
+{
+  Dictionary_Node* node_head;
+} Hash_Node;
+
+Hash_Node Hash_Table[DICTIONARY_SIZE];
+
+// Hash function credit to Dan Bernstein
+int hash(const char* word) {
+  unsigned long hash = 5381;
+    int c;
+    while (c = *word++)
+      hash = (((hash << 5) + hash) + c) % (DICTIONARY_SIZE - 1);
+    return hash;
+}
+
+// Total memory used in bytes; includes hash table, dictionary array and global ints
+unsigned int TotalMemoryUsed = 3*sizeof(unsigned int) + DICTIONARY_SIZE*sizeof(Hash_Node) + DICTIONARY_SIZE*WORD_LENGTH*sizeof(char);
+unsigned int NumberOfDictionaryWords = 0;     // Number of dictionary words in use
+unsigned int NumberOfContextWords = 0;        // Number of context words in use
+
+/* Inserts a word into sorted_dictionary.    *
+ * Assumes that word is not contained inside *
+ * dictionary array.                         */
+char* dictionaryInsert(const char* word, int ins_offset)
+{
+  char tmp[WORD_LENGTH]; // tmp variable for swapping words during insertion
+  strcpy(sorted_dictionary[ins_offset], word); // place word at lowest unfilled offset
+  /* Iteratively sort dictionary until an appropriate insertion offset is found */
+  while(ins_offset > 0 && sorted_dictionary[ins_offset] < sorted_dictionary[ins_offset - 1])
+  {
+    /* Swap adjacent words */
+    strcpy(tmp, sorted_dictionary[ins_offset]);
+    strcpy(sorted_dictionary[ins_offset], sorted_dictionary[ins_offset-1]);
+    strcpy(sorted_dictionary[ins_offset-1], tmp);
+    /* Advance one place down in dictionary */
+    ins_offset--;
+  }
+  NumberOfDictionaryWords++;
+  return &sorted_dictionary[ins_offset][0];
+}
+
+/* Searches sorted_dictionary in O(lg(n)), returning  *
+ * the address of the first found word with its first *
+ * letter matching firstletter.                       */
+int dictionaryBinarySearch(const char firstLetter, int low, int high)
+{
+  /* Move current position halfway between search bounds */
+  int offset = (low+high)/2;
+  /* Half search bounds until word is found; if not, return -1 */
+  while(sorted_dictionary[offset][0] != firstLetter)
+  {
+    if(offset == 0)
+      return -1;
+    else if(sorted_dictionary[offset][0] > firstLetter /* Check lower half */)
+      return dictionaryBinarySearch(firstLetter, low, offset);
+    else /* Check upper half */
+      return dictionaryBinarySearch(firstLetter, offset+1, high);
+  }
+  return offset;
+}
+
+/* Inserts word at the head of a hash node.*
+ * Assumes that word is not already present*
+ * in hash table.                          */
+void HTinsert(const char* word, char** word_address)
+{
+  Dictionary_Node* tmp = malloc(sizeof(Dictionary_Node));
+  if(Hash_Table[hash(word)].node_head == NULL) {
+    tmp->next = NULL;
+  }
+  else
+    tmp->next = Hash_Table[hash(word)].node_head->next;
+  Hash_Table[hash(word)].node_head = tmp;
+  tmp->word = word_address;
+  TotalMemoryUsed += sizeof(Dictionary_Node);
+}
+
+Dictionary_Node* HTsearch(const char* word)
+{
+  char w[WORD_LENGTH];
+  Dictionary_Node* current_dictionary_node;
+  strcpy(w, word);
+  w[0] |= 0x20;
+  Hash_Node* check_node = &Hash_Table[hash(w)];
+  printf("Check node checking with Node %p\n", check_node);
+  if(check_node->node_head == NULL) {
+    return NULL;
+  }
+  else
+    current_dictionary_node = check_node->node_head;
+  while(current_dictionary_node && strcmp(*current_dictionary_node->word, w))
+    current_dictionary_node = current_dictionary_node->next;
+  return current_dictionary_node;
+}
+
+/* Appends items through sorted insertion*
+ * to the Dictionary_Node head list      */
+int AutoComplete_LoadDictionary(const char *filename) {
+  char word[WORD_LENGTH] = {0};
+  FILE* file = fopen(filename, "r");
+  if(file == NULL)
+    return 1;
+
+  while(fscanf(file, "%s", word) == 1) {
+    AutoComplete_AddWord(word);
+  }
+
+  fclose(file);
+  return 0;
+}
+
+/* Inserts word into dictionary according to ascending alphabetical order *
+ * Does nothing if parameter word is already in dictionary                */
+void AutoComplete_AddWord(const char *word) {
+  printf("\nAddWord initialized with %s\n", word);
+  static int sorted_dictionary_insertion_start = 0; // Offset for array insertion
+    TotalMemoryUsed += sizeof(int);
+  if(HTsearch(word)) return;
+
+  int ins_index = sorted_dictionary_insertion_start; // First unused array index
+  char w[WORD_LENGTH]; // Holding array for decapitalizing dictionary words
+  strcpy(w, word);
+  w[0] |= 0x20; // Ensure that dictionary word is lowercase
+
+  /* Word was not discovered in hash table.        *
+   * Follow InsertionSort algorithm to insert word *
+   * into sorted dictionary and add to hash table  */
+  char** address = dictionaryInsert(w, sorted_dictionary_insertion_start);  // Insert word into dictionary array
+  HTinsert(w, address);         // Insert word into hash table
+  sorted_dictionary_insertion_start++;  // Increment starting offset for array insertion
+  printf("\t%s added to dictionary. TotalMemoryUsed = %d\n", w, TotalMemoryUsed);
+}
+
+void AutoComplete_AddContext(const char *word, const char * prior) {
+  printf("\nAddContext initialized with %s\n", prior);
+  Context_Node* tmp_context = malloc(sizeof(Context_Node)); // Temp node for storing new context word in Dictionary
+  char p[WORD_LENGTH];
+  p[0] |= 0x20;
+  strcpy(tmp_context->word, p);
+
+  /* Ensure that word is in dictionary and hash table */
+  AutoComplete_AddWord(word);
+
+  Dictionary_Node* current_dictionary_node = HTsearch(word);
+  printf("\tStarting address: %p\n", current_dictionary_node);
+
+  /* Check if context words defined under word */
+  if(current_dictionary_node->prior == NULL) {
+    printf("\t\"%s\" added as context for \"%s\"\n", p, word);
+    printf("\tNew context list initialized for \"%s\"\n", word);
+    current_dictionary_node->prior = tmp_context;
+    tmp_context->next = NULL;
+    TotalMemoryUsed += sizeof(Context_Node);
+    printf("\tTotal memory used = %d\n", TotalMemoryUsed);
+    NumberOfContextWords++;
+    return;
+  }
+
+  /* If not, parse context list for prior*/
+  Context_Node* current_context_node = current_dictionary_node->prior;
+  Context_Node* previous_context_node = NULL;
+  while(current_context_node) {
+    if(strcmp(current_context_node->word, tmp_context->word) == 0) {
+      //printf("\t%s already in list. Exiting AddContext\n", prior);
+      free(tmp_context);
+      return;
+    }
+    previous_context_node = current_context_node;   // Remember last examined node
+    current_context_node = current_context_node->next;  // Advance in context list
+  }
+
+  /* Prior not found in context list */
+  current_context_node->next = tmp_context;
+  tmp_context->next = NULL;
+  printf("\t\"%s\" added as context for \"%s\"\n", prior, word);
+  TotalMemoryUsed += sizeof(Context_Node);
+  NumberOfContextWords++;
+  printf("\tContext tail extended. Total memory used = %d\n", TotalMemoryUsed);
+  return;
+}
+
+int AutoComplete_TotalMemoryUsed() {
+  return TotalMemoryUsed;
+}
+
+int AutoComplete_NumberOfDictionaryWords() {
+  return NumberOfDictionaryWords;
+}
+int AutoComplete_NumberOfContextWords() {
+  return NumberOfContextWords;
+}
+
+// Needs to take input and decapitalize. Checks if first letter is capitalized
+// Needs to be able to stop looking for suggestions once some have been found and one doesn't match
+int AutoComplete_Suggestion(const char *partial_word, const char *prior, const char *completions[], int size_of_array) {
+  /* Check if input is valid */
+  if(partial_word == NULL || !strcmp(partial_word, "")) {
+    return 0;
+  }
+
+  int context_flag = 1;       // Context included in parameters; include in suggestion matching
+  if(prior == NULL || !strcmp(prior, ""))
+    context_flag = 0;        // No context; if partial word matches dictionary word, add to completions array
+  int match_flag;            // Signals whether or not current dictionary word contains partial word
+  int suggestions_found = 0;     // Number of potential word suggestions
+  Dictionary_Node* current_dictionary_node;
+  Context_Node* current_context_node;
+
+  char w[WORD_LENGTH];       // holding array for decapitalizing partial_word
+  int is_capitalized = 0;
+  strcpy(w, partial_word);
+  /* Check if partial_word was capitalized */
+  if((partial_word[0] & 0x20) == 0) {
+    w[0] |= 0x20;          // ensure that partial word input is lowercase
+    is_capitalized = 1;    // ensure that output suggestions are capitalized
+  }
+  char p[WORD_LENGTH];
+  strcpy(p, prior);
+  p[0] |= 0x20;
+
+  int dict_index = dictionaryBinarySearch(w[0], 0, NumberOfDictionaryWords - 1);
+  if(dict_index < 0 /* No matches found */)
+    return 0;
+  int i;
+  int starting_index = dict_index;
+  int starting_match;
+  int reverse_flag;
+  /* Continue progressing in dictionary until a dictionary
+   * entry is less than the partial word.
+   *
+   * If a match appeared in the first word, move backwards
+   * in dictionary until no more matches appear.
+   *
+   * Searching ends when suggestions found = size_of_array */
+  while(suggestions_found < size_of_array && dict_index >= 0 && dict_index < DICTIONARY_SIZE)
+  {
+    i = 0;
+    while(sorted_dictionary[dict_index][i] == w[i])
+    {
+      if(w[i+1] == '\0')
+      {
+        match_flag = 1;
+        break;
+      }
+      i++;
+    }
+
+    if(!match_flag && suggestions_found && !starting_match)
+      return suggestions_found;
+
+    if(sorted_dictionary[dict_index][i] == w[i] && starting_index == dict_index)
+      starting_match++;
+
+    if(reverse_flag && !match_flag)
+      return suggestions_found;
+
+    if(match_flag)
+    {
+      if(context_flag)
+      {
+        current_dictionary_node = HTsearch(sorted_dictionary[dict_index]);
+        current_context_node = current_dictionary_node->prior;
+        while(current_context_node)
+        {
+          if(!strcmp(current_context_node->word, p))
+          {
+            if(is_capitalized)
+            {
+              current_dictionary_node->word[0][0] &= 0xFFDF;
+              completions[suggestions_found] = *current_dictionary_node->word;
+              printf("Abnormal suggestion for %s is %s\n", partial_word, completions[suggestions_found]);
+              suggestions_found++;
+              break;
+            }
+            else
+            {
+              completions[suggestions_found] = *current_dictionary_node->word;
+              printf("Normal suggestion for %s is %s\n", partial_word, completions[suggestions_found]);
+              break;
+            }
+          }
+          else
+            current_context_node = current_context_node->next;
+        }
+
+      }
+      else if(is_capitalized)
+      {
+        current_dictionary_node->word[0][0] &= 0xFFDF;
+        completions[suggestions_found] = *current_dictionary_node->word;
+        printf("Abnormal suggestion for %s is %s\n", partial_word, completions[suggestions_found]);
+        suggestions_found++;
+      }
+      else
+      {
+        completions[suggestions_found] = *current_dictionary_node->word;
+        suggestions_found++;
+      }
+      if(reverse_flag)
+      {
+        dict_index--;
+        continue;
+      }
+      else
+      {
+        dict_index++;
+        continue;
+      }
+    }
+
+    if(starting_match)
+    {
+      reverse_flag++;
+      dict_index = starting_index - 1;
+    }
+    else
+    {
+      dict_index++;
+    }
+    return suggestions_found;
+  }
+}
+
+int main() {
+  /*const char* completions[1000];
+  char* pointer = "hello";
+  AutoComplete_AddWord("zebra");
+  AutoComplete_AddWord(pointer);
+  AutoComplete_AddWord("funtime");
+  AutoComplete_AddWord("zebadiah");
+  AutoComplete_AddContext("funtime", "glorious");
+  AutoComplete_AddContext("Fudrucker", "magnificent");
+  AutoComplete_AddContext("zebra", "white");
+  AutoComplete_AddContext("zebra", "black");
+  AutoComplete_AddContext("zebra", "blaq");
+  printf("Number of suggestions found: %d\n\n", AutoComplete_Suggestion("zeb", "brown", completions, 2));
+
+
+  char cc[100];
+  char input[100]; */
+
+  //int i;
+  AutoComplete_LoadDictionary("words.english.medium");
+  printf("\nTotal memory used in execution: %lf KB\n", ((double) TotalMemoryUsed)/1080);
+  printf("\nTotal number of words: %d\n", NumberOfDictionaryWords);
+  printf("\nTotal number of context words: %d\n\n", NumberOfContextWords);
+  //while(list_current != NULL) { printf("%s\n", list_current->word);
+  //  list_current = list_current->next;
+  /*FILE* context = fopen("words.english.medium.context", "r"); while(fscanf(context, "%s%s", input, cc) == 2)
+    AutoComplete_AddContext(input, cc);
+    printf("\n\n\nTotal memory used in execution: %lf kilobytes\n", ((double) TotalMemoryUsed)/1080);
+  printf("\nSuggestions for 'chan' = %d\n\n", AutoComplete_Suggestion("chan", NULL, completions, 10));
+  printf("\nSuggestions for 'to S' = %d\n\n", AutoComplete_Suggestion("S", "to", completions, 10));
+  for(i = 0; i < 10; i++) {
+    printf("S could be: %s\n", completions[i]);
+  }
+  printf("\nSuggestions for 'to s' = %d\n\n", AutoComplete_Suggestion("s", "to", completions, 10));
+  for(i = 0; i < 10; i++) {
+    printf("s could be: %s\n", completions[i]);
+  }
+  printf("\nSuggestions for 'S' = %d\n\n", AutoComplete_Suggestion("S", "", completions, 200));
+  for(i = 0; i < 185; i++) {
+    printf("S could be: %s\n", completions[i]);
+  }
+  printf("\nSuggestions for 'xiphoidal' = %d\n\n", AutoComplete_Suggestion("xiphoidal", "", completions, 10));
+  printf("\nTotal memory used in execution: %lf KB\n", ((double) TotalMemoryUsed)/1080);
+  printf("\nTotal number of words: %d\n", NumberOfDictionaryWords);
+  printf("\nTotal number of context words: %d\n\n", NumberOfContextWords); */
+  return 0;
+}

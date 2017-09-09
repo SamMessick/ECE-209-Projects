@@ -1,0 +1,345 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "autocomplete.h"
+
+/* Things to create functions for:
+      parse list for word
+ */
+
+typedef struct context_list  // List of context words for a dictionary word
+{
+  char word[100];   // Context word
+  struct context_list* next; // Pointer to next context nodes
+} Context_Node;
+
+typedef struct word_list   // List of dictionary words
+{
+  char word[100];  // Dictionary word
+  struct word_list* next;  // Pointer to next dictionary node
+  struct context_list* prior;  // Pointer to context list for dictionary word
+} Dictionary_Node;
+Dictionary_Node* head = NULL;  // Dictionary head
+
+unsigned int TotalMemoryUsed = 3*sizeof(unsigned int); // Total amount of memory used in bytes
+unsigned int NumberOfDictionaryWords = 0;     // Number of dictionary words in use
+unsigned int NumberOfContextWords = 0;        // Number of context words in use
+
+/* Appends items through sorted insertion
+ * to the Dictionary_Node head list      */
+int AutoComplete_LoadDictionary(const char *filename) {
+  char w[100] = {0};
+  printf("%s", w);
+  FILE* file = fopen(filename, "r");
+  if(file == NULL)
+    return 1;
+
+  while(fscanf(file, "%s", w) == 1) {
+    w[0] |= 0x20;
+    //printf("\"%s\" added to Dictionary \n", w);
+    AutoComplete_AddWord(w);
+  }
+
+  fclose(file);
+  return 0;
+}
+
+/* Inserts word into dictionary according to ascending alphabetical order
+ * Does nothing if parameter word is already in dictionary               */
+void AutoComplete_AddWord(const char *word) {
+  //printf("Current word to add is %s\n", word);
+  char w[100];
+  strcpy(w, word);
+  w[0] |= 0x20;
+  Dictionary_Node* tmp = malloc(sizeof(Dictionary_Node)); // Temp node for storing new word in Dictionary
+  tmp->prior = NULL;
+  strcpy(tmp->word, w);
+  Dictionary_Node* previous_dictionary_node;     // Previous node in Dictionary
+  Dictionary_Node* current_dictionary_node = head; // Current node in Dictionary
+  if(head)
+    current_dictionary_node->word[0] |= 0x20;
+  //printf("\tHead on AddWord call is %d\n", head);
+  /* check if head pointer is NULL */
+  if(head == NULL) {
+    head = tmp;
+    tmp->next = NULL;
+    //printf("\tHead updated to %d\n", head);
+    TotalMemoryUsed += sizeof(Dictionary_Node);
+    NumberOfDictionaryWords++;
+    //printf("\tHead initialized. Total memory used = %d\n", TotalMemoryUsed);
+  }
+  else while(current_dictionary_node) {
+    /* check if word is already in list */
+    if(strcmp(current_dictionary_node->word, tmp->word) == 0) {
+      //printf("\t%s already in dictionary. Exiting AddWord\n", w);
+      free(tmp); // Deallocate tmp and exit
+      return;
+    }
+    /* Check if word should be inserted */
+    if(strcmp(tmp->word, current_dictionary_node->word) < 0) {
+
+      // Insert at head of list */
+      if(current_dictionary_node == head) {
+        tmp->next = head;
+        head = tmp;
+        //printf("\tHead updated to %d\n", head);
+        TotalMemoryUsed += sizeof(Dictionary_Node);
+        NumberOfDictionaryWords++;
+        //printf("\tHead replaced. Total memory used = %d\n", TotalMemoryUsed);
+        return;
+      }
+
+      /* Insert in middle of list */
+      else {
+        previous_dictionary_node->next = tmp;
+        tmp->next = current_dictionary_node;
+        //printf("\ttmp updated to %d\n", tmp);
+        TotalMemoryUsed += sizeof(Dictionary_Node);
+        NumberOfDictionaryWords++;
+        //printf("\tInserted node. Total memory used = %d\n", TotalMemoryUsed);
+        return;
+      }
+    }
+    /* Insert at tail of list */
+    if(current_dictionary_node->next == NULL) {
+      current_dictionary_node->next = tmp;
+      tmp->next = NULL;
+      TotalMemoryUsed += sizeof(Dictionary_Node);
+      NumberOfDictionaryWords++;
+      //printf("\tTail extended. Total memory used = %d\n", TotalMemoryUsed);
+      return;
+    }
+    previous_dictionary_node = current_dictionary_node;   // Remember last examined node
+    current_dictionary_node = current_dictionary_node->next;  // Advance in Dictionary
+    if(current_dictionary_node)
+      current_dictionary_node->word[0] |= 0;
+    //printf("\tCurrent node updated to %d\n", current_dictionary_node);
+  }
+}
+
+void AutoComplete_AddContext(const char *word, const char * prior) {
+  //printf("\nAddContext initialized\n");
+  Context_Node* tmp_context = malloc(sizeof(Context_Node)); // Temp node for storing new context word in Dictionary
+  char w[100];
+  strcpy(w, word);
+  w[0] |= 0x20;
+  char p[100];
+  strcpy(tmp_context->word, prior);
+  p[0] |= 0x20;
+  Dictionary_Node* current_dictionary_node = head;
+  if(head)
+    current_dictionary_node->word[0] |= 0x20;
+  //printf("Starting address: %p\n", current_dictionary_node);
+
+  while(current_dictionary_node->next && strcmp(current_dictionary_node->word, w)) {
+    current_dictionary_node = current_dictionary_node->next;
+    current_dictionary_node->word[0] |= 0x20;
+  }
+
+  // Word not in Dictionary
+  if(strcmp(current_dictionary_node->word, w)){
+    //printf("Word not in dictionary\n");
+    AutoComplete_AddWord(word);
+    // Advance to newly allocated word node
+    current_dictionary_node = head;
+    while(strcmp(current_dictionary_node->word, w))
+      current_dictionary_node = current_dictionary_node->next;
+  }
+  // Check if context words defined under word
+  if(current_dictionary_node->prior == NULL) {
+    //printf("\t\"%s\" added as context for \"%s\"\n", prior, w);
+    //printf("\tNew context list initialized for \"%s\"\n", w);
+    //printf("\tTotal memory used = %d\n", TotalMemoryUsed);
+    current_dictionary_node->prior = tmp_context;
+    tmp_context->next = NULL;
+    TotalMemoryUsed += sizeof(Context_Node);
+    NumberOfContextWords++;
+    return;
+  }
+  Context_Node* current_context_node = current_dictionary_node->prior;
+  Context_Node* previous_context_node = NULL;
+  while(current_context_node) {
+    /* check if prior is already in context word list */
+    if(strcmp(current_context_node->word, tmp_context->word) == 0) {
+      //printf("\t%s already in list. Exiting AddContext\n", prior);
+      free(tmp_context);
+      return;
+    }
+    /* Check if word should be inserted */
+    if(strcmp(tmp_context->word, current_context_node->word) < 0) {
+        if(current_context_node == current_dictionary_node->prior) {
+          current_dictionary_node->prior = tmp_context;
+          tmp_context->next = current_context_node;
+          TotalMemoryUsed += sizeof(Context_Node);
+          //printf("\t\"%s\" added as context for \"%s\"\n", prior, word);
+          //printf("\tNew prior created. Total memory used = %d\n", TotalMemoryUsed);
+          NumberOfContextWords++;
+          return;
+        } else {
+          previous_context_node->next = tmp_context;
+          tmp_context->next = current_context_node; TotalMemoryUsed += sizeof(Context_Node);
+          NumberOfContextWords++;
+          //printf("\t\"%s\" added as context for \"%s\"\n", prior, word);
+          //printf("\tInserted node. Total memory used = %d\n", TotalMemoryUsed);
+          return;
+      }
+    }
+    if(current_context_node->next == NULL) {
+      current_context_node->next = tmp_context;
+      tmp_context->next = NULL;
+      //printf("\t\"%s\" added as context for \"%s\"\n", prior, word);
+      TotalMemoryUsed += sizeof(Context_Node);
+      NumberOfContextWords++;
+      //printf("\tContext tail extended. Total memory used = %d\n", TotalMemoryUsed);
+      return;
+    }
+    previous_context_node = current_context_node;   // Remember last examined node
+    current_context_node = current_context_node->next;  // Advance in context list
+    if(current_context_node)
+      current_context_node->word[0] |= 0x20;
+  }
+}
+
+int AutoComplete_TotalMemoryUsed() {
+  return TotalMemoryUsed;
+}
+
+int AutoComplete_NumberOfDictionaryWords() {
+  return NumberOfDictionaryWords;
+}
+int AutoComplete_NumberOfContextWords() {
+  return NumberOfContextWords;
+}
+
+// Needs to take input and decapitalize. Checks if first letter is capitalized
+// Needs to be able to stop looking for suggestions once some have been found and one doesn't match
+int AutoComplete_Suggestion(const char *partial_word, const char *prior, const char *completions[], int size_of_array) {
+  if(partial_word == NULL || !strcmp(partial_word, "")) {
+    return 0 ;
+  } // Check if input is valid
+  int context_flag = 1;       // Context included in parameters; include in suggestion matching
+  if(prior == NULL || !strcmp(prior, ""))
+    context_flag = 0;        // No context; if partial word matches dictionary word, add to completions array
+  int match_flag;            // Signals whether or not current dictionary word contains partial word
+  int comparisons_found = 0;     // Number of potential word suggestions
+  int completions_index = 0;     // Index in completions array
+
+  char* tmp_word = (char*) malloc(100*sizeof(char));       // holding array for manipulating words
+  int is_capitalized = 0;
+  strcpy(tmp_word, partial_word);
+  /* Check if partial_word was capitalized */
+  if((partial_word[0] & 0x20) == 0) {
+    tmp_word[0] |= 32;      // ensure that partial word input is lowercase
+    is_capitalized = 1;          // ensure that output suggestions are capitalized
+  }
+    Dictionary_Node* current_dictionary_node = head;
+    Context_Node* current_context_node = NULL;
+    while(completions_index < size_of_array && current_dictionary_node) {
+      int character_comparison_index = 0; match_flag = 0;
+      while(current_dictionary_node->word[character_comparison_index] == tmp_word[character_comparison_index]) {
+        if(tmp_word[character_comparison_index + 1] == '\0') { // All characters in partial word match current word
+          match_flag++;
+          comparisons_found++;
+          break;
+        }
+        character_comparison_index++;
+      }
+      if(!match_flag && comparisons_found) {
+        free(tmp_word);
+        return completions_index;
+      }
+      if(match_flag) {
+        if(context_flag) {
+          current_context_node = current_dictionary_node->prior;
+          while(current_context_node) {
+            if(!strcmp(current_context_node->word, prior)) {
+              if(is_capitalized) {
+                //printf("Total memory = %d\n", ((double)TotalMemoryUsed)/1080);
+                current_dictionary_node->word[0] &= 0xFFDF;
+                completions[completions_index] = current_dictionary_node->word;
+                //printf("Abnormal suggestion for %s is %s\n", partial_word, new_word);
+                completions_index++;
+                break;
+              }
+              else {
+                completions[completions_index] = current_dictionary_node->word;
+                //printf("Normal suggestion for %s is %s\n", partial_word, tmp_word);
+                completions_index++;
+                break;
+              }
+            }
+            else current_context_node = current_context_node->next;
+          }
+        }
+        else {
+          if(is_capitalized) {
+            //printf("Total memory = %d\n", ((double)TotalMemoryUsed)/1080);
+            current_dictionary_node->word[0] &= 0xFFDF;
+            completions[completions_index] = current_dictionary_node->word;
+            //printf("Abnormal suggestion for %s is %s\n", partial_word, new_word);
+            completions_index++;
+          }
+          else {
+            completions[completions_index] = current_dictionary_node->word;
+            //printf("Suggestion for %s is %s\n", partial_word, completions[completions_index]);
+            completions_index++;
+          }
+        }
+      }
+    /* Proceed to check next word in dictionary */
+    current_dictionary_node = current_dictionary_node->next;
+    if(current_dictionary_node)
+      current_dictionary_node->word[0] |= 0x20;
+  }
+  free(tmp_word);
+  return completions_index;
+}
+
+int main() {
+  const char* completions[1000];
+  /*char* pointer = "hello";
+  AutoComplete_AddWord("zebra");
+  AutoComplete_AddWord(pointer);
+  AutoComplete_AddWord("funtime");
+  AutoComplete_AddWord("zebadiah");
+  AutoComplete_AddContext("funtime", "glorious");
+  AutoComplete_AddContext("Fudrucker", "magnificent");
+  AutoComplete_AddContext("zebra", "white");
+  AutoComplete_AddContext("zebra", "black");
+  AutoComplete_AddContext("zebra", "blaq");
+  printf("Number of suggestions found: %d\n\n", AutoComplete_Suggestion("zeb", "brown", completions, 2));
+
+
+  char cc[100];
+  char input[100]; */
+
+  //int i;
+  AutoComplete_LoadDictionary("input.txt");
+  printf("\nTotal memory used in execution: %lf KB\n", ((double) TotalMemoryUsed)/1080);
+  printf("\nTotal number of words: %d\n", NumberOfDictionaryWords);
+  printf("\nTotal number of context words: %d\n\n", NumberOfContextWords);
+  //while(list_current != NULL) { printf("%s\n", list_current->word);
+  //  list_current = list_current->next;
+  /*FILE* context = fopen("words.english.medium.context", "r"); while(fscanf(context, "%s%s", input, cc) == 2)
+    AutoComplete_AddContext(input, cc);
+    printf("\n\n\nTotal memory used in execution: %lf kilobytes\n", ((double) TotalMemoryUsed)/1080);
+  printf("\nSuggestions for 'chan' = %d\n\n", AutoComplete_Suggestion("chan", NULL, completions, 10));
+  printf("\nSuggestions for 'to S' = %d\n\n", AutoComplete_Suggestion("S", "to", completions, 10));
+  for(i = 0; i < 10; i++) {
+    printf("S could be: %s\n", completions[i]);
+  }
+  printf("\nSuggestions for 'to s' = %d\n\n", AutoComplete_Suggestion("s", "to", completions, 10));
+  for(i = 0; i < 10; i++) {
+    printf("s could be: %s\n", completions[i]);
+  }
+  printf("\nSuggestions for 'S' = %d\n\n", AutoComplete_Suggestion("S", "", completions, 200));
+  for(i = 0; i < 185; i++) {
+    printf("S could be: %s\n", completions[i]);
+  }
+  printf("\nSuggestions for 'xiphoidal' = %d\n\n", AutoComplete_Suggestion("xiphoidal", "", completions, 10));
+  printf("\nTotal memory used in execution: %lf KB\n", ((double) TotalMemoryUsed)/1080);
+  printf("\nTotal number of words: %d\n", NumberOfDictionaryWords);
+  printf("\nTotal number of context words: %d\n\n", NumberOfContextWords); */
+  return 0;
+}
+
